@@ -1,0 +1,8 @@
+# dsh-prompt-manager bundle patch: mounts the prompt manager service, its
+# system-prompt waterfall hook, agent tools, and the /api RPC surface for the
+# web client half. Later patch layers may override the `root` config to point
+# the preset store elsewhere.
+- insert:
+    - id: prompt-manager
+      name: dsh-prompt-manager
+      config: {}

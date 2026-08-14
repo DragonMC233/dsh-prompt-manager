@@ -1,0 +1,16 @@
+# 本机开发依赖：指向 npx checkout 的符号链接，不可提交（含本机绝对路径）。
+# 注意：符号链接在 git 中按文件处理，须用不带尾部斜杠的规则匹配。
+node_modules
+node_modules/
+
+# 调试/复现残留脚本
+repro-tmp.mjs
+verify-inject.mjs
+
+# 日志与临时文件
+*.log
+.DS_Store
+
+# 设计/缺陷文档不纳入版本管理（保留在工作区）
+docs/BUGS.md
+docs/DESIGN.md
