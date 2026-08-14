@@ -114,6 +114,54 @@
 		border: 1px solid #33384a; color: #e6e8ee; background: #232833;
 		border-radius: 13px; padding: 0 10px; font-size: 11px;
 	}
+	/* 左侧预设控制面板（管理视图：全部预设 + 开关状态；主图保持生效视图） */
+	#btn-preset-toggle {
+		position: fixed; top: 52px; left: 8px; z-index: 41;
+		height: 26px; font: inherit; cursor: pointer;
+		border: 1px solid #33384a; color: #e6e8ee; background: #232833;
+		border-radius: 13px; padding: 0 10px; font-size: 11px;
+	}
+	#btn-preset-toggle.active { border-color: #3b82f6; color: #8ab4f8; }
+	#presets {
+		position: fixed; top: 52px; left: 0; bottom: 0; width: 252px; z-index: 40;
+		background: #14171e; border-right: 1px solid #2a2e37;
+		display: none; flex-direction: column;
+	}
+	#presets.open { display: flex; }
+	#presets .phead {
+		display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+		border-bottom: 1px solid #2a2e37; font-weight: 600; font-size: 13px;
+	}
+	#presets .phead .spacer { flex: 1; }
+	#presets .pbody { flex: 1; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+	#presets .prow {
+		border: 1px solid #2a2e37; border-radius: 8px; padding: 6px 8px; background: #171a21;
+	}
+	#presets .prow.active { border-color: #3b82f6; }
+	#presets .prow .pline { display: flex; align-items: center; gap: 6px; }
+	#presets .prow .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+	#presets .prow .pkind { font-size: 10px; border-radius: 999px; padding: 0 6px; line-height: 16px; white-space: nowrap; }
+	#presets .prow .pkind.user { background: #1d3a2e; color: #4ade80; border: 1px solid #2a5c44; }
+	#presets .prow .pkind.builtin { background: #232833; color: #9aa1b3; border: 1px solid #33384a; }
+	#presets .prow .pstate { font-size: 10px; border-radius: 999px; padding: 0 6px; line-height: 16px; white-space: nowrap; }
+	#presets .prow .pstate.on { background: rgba(59,130,246,.16); color: #8ab4f8; border: 1px solid #2b4a7a; }
+	#presets .prow .pstate.off { background: #1c2029; color: #6b7280; border: 1px solid #2e3340; }
+	#presets .prow .plabel { color: #8b90a0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+	#presets .prow .pdesc { color: #6b7280; font-size: 11px; margin-top: 2px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+	#presets .pempty { color: #8b90a0; font-size: 12px; padding: 8px; }
+	#presets .pnote { color: #6b7280; font-size: 11px; padding: 0 8px 8px; line-height: 1.5; }
+	#presets .switch {
+		flex: none; width: 34px; height: 18px; border-radius: 9px; border: 1px solid #33384a;
+		background: #232833; cursor: pointer; position: relative; padding: 0;
+	}
+	#presets .switch.on { background: #1e4a8a; border-color: #2b6cb0; }
+	#presets .switch .knob {
+		position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+		background: #9aa1b3; transition: left .15s;
+	}
+	#presets .switch.on .knob { left: 18px; background: #fff; }
+	body.presets-open #wrap { margin-left: 252px; }
+	body.history-open #wrap { margin-right: 0; }
 	/* hover 实体解释 tooltip */
 	#tip {
 		position: fixed; z-index: 300; display: none; pointer-events: none;
@@ -143,6 +191,12 @@
 	</span>
 	<button id="btn-collapse-groups" title="收起画布中展开的收纳组" style="display:none;">收起展开段</button>
 	<button id="btn-back">返回</button>
+</div>
+<button id="btn-preset-toggle" title="显示/隐藏预设控制面板" class="active">预设</button>
+<div id="presets">
+	<div class="phead">预设方案<span class="spacer"></span><button class="bar-btn" id="btn-presets-refresh" style="height:22px;font:inherit;cursor:pointer;border:1px solid #33384a;color:#e6e8ee;background:#232833;border-radius:11px;padding:0 8px;font-size:11px;">刷新</button></div>
+	<div class="pbody" id="presets-body"><div class="pempty">加载中…</div></div>
+	<div class="pnote">主图只展示激活预设的覆盖；此处列出全部预设并标记开关状态。切换开关即对下一模型步骤生效。</div>
 </div>
 <button id="btn-history-toggle" title="显示/隐藏对话历史">历史</button>
 <div id="history">
@@ -910,6 +964,109 @@ document.getElementById("btn-history-toggle").addEventListener("click", () => {
 });
 document.getElementById("btn-history-refresh").addEventListener("click", () => void refreshHistory());
 
+// ── 左侧预设控制面板（管理视图：全部预设 + 开关状态）──────────────────────
+let presetsData = null;        // listPresets 结果
+let presetsBody = document.getElementById("presets-body");
+let presetsBusy = false;
+
+async function loadPresets() {
+	if (presetsBusy) return;
+	presetsBusy = true;
+	presetsBody.innerHTML = '<div class="pempty">加载中…</div>';
+	try {
+		presetsData = await callRpc("prompt-manager/listPresets", {});
+		renderPresetPanel();
+	} catch (e) {
+		presetsBody.innerHTML = '<div class="pempty">加载失败：' + escapeHtml((e && e.message) ? e.message : e) + "</div>";
+	} finally {
+		presetsBusy = false;
+	}
+}
+
+function renderPresetPanel() {
+	if (presetsData === null) return;
+	const list = presetsData.presets || [];
+	if (list.length === 0) {
+		presetsBody.innerHTML = '<div class="pempty">暂无预设。可在设置页新建，或用 save_prompt 工具固化。</div>';
+		return;
+	}
+	const rows = [];
+	for (const p of list) {
+		const active = p.name === presetsData.active;
+		const row = document.createElement("div");
+		row.className = "prow" + (active ? " active" : "");
+		const line = document.createElement("div");
+		line.className = "pline";
+		const name = document.createElement("span");
+		name.className = "pname";
+		name.textContent = p.name;
+		name.title = p.path || p.name;
+		line.appendChild(name);
+		const kind = document.createElement("span");
+		kind.className = "pkind " + p.kind;
+		kind.textContent = p.kind === "builtin" ? "内置" : "个性";
+		line.appendChild(kind);
+		const state = document.createElement("span");
+		state.className = "pstate " + (active ? "on" : "off");
+		state.textContent = active ? "生效" : "未启用";
+		line.appendChild(state);
+		const sw = document.createElement("button");
+		sw.className = "switch" + (active ? " on" : "");
+		sw.setAttribute("role", "switch");
+		sw.setAttribute("aria-checked", active ? "true" : "false");
+		sw.title = active ? "停用此预设" : "启用此预设（下一模型步骤生效）";
+		sw.appendChild(Object.assign(document.createElement("span"), { className: "knob" }));
+		sw.addEventListener("click", () => void togglePreset(p.name, active));
+		line.appendChild(sw);
+		row.appendChild(line);
+		if (p.label && p.label !== p.name) {
+			const label = document.createElement("div");
+			label.className = "plabel";
+			label.textContent = p.label + " · " + p.ruleCount + " 条规则";
+			row.appendChild(label);
+		} else {
+			const label = document.createElement("div");
+			label.className = "plabel";
+			label.textContent = p.ruleCount + " 条规则";
+			row.appendChild(label);
+		}
+		if (p.description) {
+			const desc = document.createElement("div");
+			desc.className = "pdesc";
+			desc.textContent = p.description;
+			row.appendChild(desc);
+		}
+		rows.push(row);
+	}
+	presetsBody.innerHTML = "";
+	for (const r of rows) presetsBody.appendChild(r);
+}
+
+async function togglePreset(name, active) {
+	try {
+		await callRpc("prompt-manager/setActive", { name: active ? "" : name });
+		await loadPresets();
+		await load(); // 重载当前轮次：主图覆盖列/来源段状态标记随激活变化
+	} catch (e) {
+		presetsBody.innerHTML = '<div class="pempty">切换失败：' + escapeHtml((e && e.message) ? e.message : e) + "</div>";
+	}
+}
+
+// 面板折叠/展开：展开时主图让位（margin-left），fit 重新计算
+const presetsEl = document.getElementById("presets");
+const presetToggleBtn = document.getElementById("btn-preset-toggle");
+let presetsOpen = true;
+function applyPresetsOpen() {
+	document.body.classList.toggle("presets-open", presetsOpen);
+	presetsEl.classList.toggle("open", presetsOpen);
+	presetToggleBtn.classList.toggle("active", presetsOpen);
+	presetToggleBtn.textContent = presetsOpen ? "预设◀" : "预设▶";
+	if (layout !== null) fit();
+}
+presetToggleBtn.addEventListener("click", () => { presetsOpen = !presetsOpen; applyPresetsOpen(); });
+document.getElementById("btn-presets-refresh").addEventListener("click", () => void loadPresets());
+applyPresetsOpen();
+
 wrap.addEventListener("wheel", (e) => {
 	e.preventDefault();
 	const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
@@ -937,6 +1094,7 @@ modal.addEventListener("click", (e) => { if (e.target === modal) modal.style.dis
 
 // 启动：默认展示最新 session 的最新一轮；无历史时回退全局最新
 (async () => {
+	void loadPresets(); // 左侧预设面板与主图并行加载
 	try {
 		const data = await callRpc("prompt-manager/getHistory", {});
 		historySessions = data.sessions || [];
