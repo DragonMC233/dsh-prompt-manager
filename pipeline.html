@@ -114,6 +114,41 @@
 		border: 1px solid #33384a; color: #e6e8ee; background: #232833;
 		border-radius: 13px; padding: 0 10px; font-size: 11px;
 	}
+	/* 草稿预览浮层（?draft=<overrides JSON> 触发：预测草稿规则在渲染流水线中的落位） */
+	#draft-panel {
+		position: fixed; top: 46px; right: 308px; bottom: 0; width: 320px; z-index: 40;
+		background: #14171e; border-left: 1px solid #2a2e37;
+		display: none; flex-direction: column;
+	}
+	#draft-panel.open { display: flex; }
+	#draft-panel .dhead {
+		display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+		border-bottom: 1px solid #2a2e37; font-weight: 600; font-size: 13px;
+	}
+	#draft-panel .dhead .spacer { flex: 1; }
+	#draft-panel .dbody { flex: 1; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+	#draft-panel .drow {
+		display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px;
+		border-radius: 6px; color: #c3c8d4;
+	}
+	#draft-panel .drow.draft { background: rgba(59,130,246,.12); color: #8ab4f8; font-weight: 600; }
+	#draft-panel .dpos { color: #8b90a0; font-size: 11px; font-family: ui-monospace, Consolas, monospace; min-width: 30px; }
+	#draft-panel .dname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+	#draft-panel .dtag { font-size: 10px; border-radius: 999px; padding: 0 6px; line-height: 16px; white-space: nowrap; background: #16233a; color: #8ab4f8; border: 1px solid #3b82f6; }
+	#draft-panel .dnote { color: #6b7280; font-size: 11px; padding: 0 8px 8px; line-height: 1.5; }
+	#draft-panel .dsave { display: flex; align-items: center; gap: 6px; padding: 8px; border-top: 1px solid #2a2e37; }
+	#draft-panel .dsave input {
+		flex: 1; min-width: 0; box-sizing: border-box; height: 26px; font: inherit;
+		color: #e6e8ee; background: #232833; border: 1px solid #33384a; border-radius: 8px; padding: 0 8px; font-size: 12px;
+	}
+	#draft-panel .dsave button {
+		height: 26px; font: inherit; cursor: pointer; border: 1px solid #3b82f6; color: #8ab4f8;
+		background: #16233a; border-radius: 13px; padding: 0 10px; font-size: 12px; flex: none;
+	}
+	#draft-panel .dsave button:disabled { opacity: .5; cursor: default; }
+	#draft-panel .dstatus { font-size: 11px; padding: 0 8px 4px; color: #8b90a0; }
+	#draft-panel .dstatus.ok { color: #4ade80; }
+	#draft-panel .dstatus.err { color: #ef6a6a; }
 	/* 左侧预设控制面板（管理视图：全部预设 + 开关状态；主图保持生效视图） */
 	#btn-preset-toggle {
 		position: fixed; top: 52px; left: 8px; z-index: 41;
@@ -203,6 +238,16 @@
 	<div class="hhead">对话历史<span class="spacer"></span><button class="bar-btn" id="btn-history-refresh" style="height:22px;font:inherit;cursor:pointer;border:1px solid #33384a;color:#e6e8ee;background:#232833;border-radius:11px;padding:0 8px;font-size:11px;">刷新</button></div>
 	<div class="hbody" id="history-body"><div class="empty">加载中…</div></div>
 	<div class="note">仅列出本次运行期间真实组装过的轮次（组装过程是运行时数据，无法从持久化历史重建）。</div>
+</div>
+<div id="draft-panel">
+	<div class="dhead">草稿预览<span class="spacer"></span><button id="btn-draft-close" style="height:22px;font:inherit;cursor:pointer;border:1px solid #33384a;color:#e6e8ee;background:#232833;border-radius:11px;padding:0 8px;font-size:11px;">关闭</button></div>
+	<div class="dbody" id="draft-body"><div class="empty">加载中…</div></div>
+	<div class="dsave">
+		<input id="draft-save-name" placeholder="目标预设名（默认当前激活）">
+		<button id="btn-draft-save">保存草稿</button>
+	</div>
+	<div class="dstatus" id="draft-save-status"></div>
+	<div class="dnote">拖动蓝色「自定义」行即可调整渲染顺序（自动换算 order/置顶），保存后写入目标预设；主图仍显示当前生效预设。关闭即清除草稿参数。</div>
 </div>
 <div id="wrap"><div id="stage"><div id="world"><canvas id="cv"></canvas></div></div></div>
 <div id="modal"><div class="panel" id="panel"></div></div>
@@ -1092,9 +1137,145 @@ window.addEventListener("mouseup", () => { dragging = false; wrap.classList.remo
 
 modal.addEventListener("click", (e) => { if (e.target === modal) modal.style.display = "none"; });
 
+// ── 草稿预览浮层：?draft=<overrides JSON> —— 预测落位 + 拖拽排序 + 保存 ──
+const draftPanel = document.getElementById("draft-panel");
+const draftBody = document.getElementById("draft-body");
+const draftParam = new URLSearchParams(location.search).get("draft");
+const draftPresetParam = new URLSearchParams(location.search).get("preset"); // 来自编辑器的预设名（可选）
+const DRAFT_TOP_ORDER = -1000; // 与 host normalizePreset 的置顶哨兵一致
+let draftOverrides = null;     // 当前草稿规则（可变，拖拽/保存都改它）
+let draftPreviewData = null;   // 最近一次预览响应（含每段精确排序 key）
+
+async function loadDraftPreview() {
+	if (draftParam === null) return;
+	draftPanel.classList.add("open");
+	try {
+		draftOverrides = JSON.parse(draftParam);
+	} catch (e) {
+		draftBody.innerHTML = '<div class="empty">草稿参数解析失败：' + escapeHtml(String(e && e.message ? e.message : e)) + "</div>";
+		return;
+	}
+	await refreshDraftPreview();
+}
+
+async function refreshDraftPreview() {
+	draftBody.innerHTML = '<div class="empty">计算草稿落位中…</div>';
+	try {
+		const data = await callRpc("prompt-manager/previewPreset", { overrides: draftOverrides });
+		draftPreviewData = data;
+		renderDraftPreview(data);
+	} catch (e) {
+		draftBody.innerHTML = '<div class="empty">加载失败：' + escapeHtml((e && e.message) ? e.message : e) + "</div>";
+	}
+}
+
+/** 拖到槽位 slot（applied[slot] 之前）：取邻居真实 key 算中点 order，写回草稿并重算。 */
+function handleDraftDrop(e, slot) {
+	e.preventDefault();
+	if (!draftPreviewData) return;
+	const name = e.dataTransfer ? String(e.dataTransfer.getData("text/plain") || "") : "";
+	const applied = draftPreviewData.applied || [];
+	if (!name || applied.length === 0) return;
+	const prev = slot > 0 ? applied[slot - 1] : null;
+	const next = slot < applied.length ? applied[slot] : null;
+	const keyOf = (s) => (typeof s.key === "number" ? s.key : s.position - 1);
+	let order;
+	if (prev === null) order = DRAFT_TOP_ORDER;            // 拖到最前 = 置顶
+	else if (next === null) order = keyOf(prev) + 1;       // 拖到最后
+	else order = (keyOf(prev) + keyOf(next)) / 2;          // 中点：精确落在两者之间
+	const rule = draftOverrides.find((r) => r.section === name);
+	if (!rule) return;
+	rule.order = order;
+	delete rule.after;
+	delete rule.top;
+	document.getElementById("draft-save-status").textContent = "";
+	void refreshDraftPreview();
+}
+
+function renderDraftPreview(data) {
+	if (!data || data.error) {
+		draftBody.innerHTML = '<div class="empty">' + escapeHtml(data ? data.error : "无数据") + "</div>";
+		return;
+	}
+	const applied = data.applied || [];
+	draftBody.innerHTML = "";
+	if (applied.length === 0) {
+		draftBody.innerHTML = '<div class="empty">（无渲染段）</div>';
+		return;
+	}
+	for (const s of applied) {
+		const row = document.createElement("div");
+		row.className = "drow" + (s.draft ? " draft" : "");
+		row.setAttribute("draggable", s.draft ? "true" : "false");
+		if (s.draft) row.title = "拖动调整渲染顺序";
+		row.addEventListener("dragstart", (ev) => { ev.dataTransfer.setData("text/plain", s.name); ev.dataTransfer.effectAllowed = "move"; });
+		row.addEventListener("dragover", (ev) => { ev.preventDefault(); });
+		row.addEventListener("drop", (ev) => handleDraftDrop(ev, applied.indexOf(s)));
+		const pos = document.createElement("span");
+		pos.className = "dpos";
+		pos.textContent = "#" + s.position;
+		const name = document.createElement("span");
+		name.className = "dname";
+		name.textContent = s.name;
+		name.title = s.name;
+		row.appendChild(pos);
+		row.appendChild(name);
+		if (s.draft) {
+			const tag = document.createElement("span");
+			tag.className = "dtag";
+			tag.textContent = "自定义 · 可拖动";
+			row.appendChild(tag);
+			// 空文本段：列表显示但渲染时被丢弃——明示
+			const rule = (draftOverrides || []).find((r) => r.section === s.name);
+			if (!rule || String(rule.text || "").trim() === "") {
+				const emptyTag = document.createElement("span");
+				emptyTag.style.cssText = "font-size:10px;border-radius:999px;padding:0 6px;line-height:16px;white-space:nowrap;color:#ef6a6a;border:1px solid #6b2f36;";
+				emptyTag.textContent = "空文本 · 不会渲染";
+				row.appendChild(emptyTag);
+			}
+		}
+		draftBody.appendChild(row);
+	}
+	// 尾部追加区（拖到最末尾）
+	const tail = document.createElement("div");
+	tail.style.cssText = "height:14px;border-radius:6px;";
+	tail.addEventListener("dragover", (ev) => ev.preventDefault());
+	tail.addEventListener("drop", (ev) => handleDraftDrop(ev, applied.length));
+	draftBody.appendChild(tail);
+	// 默认保存目标：编辑器带来的预设名优先，其次当前激活预设（只在未手动输入时填充）
+	const nameInput = document.getElementById("draft-save-name");
+	if (nameInput && nameInput.value === "") {
+		nameInput.value = draftPresetParam || (presetsData && presetsData.active ? presetsData.active : "");
+		nameInput.placeholder = draftPresetParam ? "保存到：" + draftPresetParam : "目标预设名（默认当前激活）";
+	}
+}
+
+document.getElementById("btn-draft-close").addEventListener("click", () => { location.search = ""; });
+
+document.getElementById("btn-draft-save").addEventListener("click", async () => {
+	const statusEl = document.getElementById("draft-save-status");
+	const name = document.getElementById("draft-save-name").value.trim();
+	if (!name) { statusEl.textContent = "请输入目标预设名"; statusEl.className = "dstatus err"; return; }
+	if (!draftOverrides || draftOverrides.length === 0) { statusEl.textContent = "草稿为空，无需保存"; statusEl.className = "dstatus err"; return; }
+	const exists = presetsData && presetsData.presets.some((p) => p.name === name);
+	statusEl.textContent = "保存中…";
+	statusEl.className = "dstatus";
+	try {
+		if (exists) await callRpc("prompt-manager/updatePreset", { name, overrides: draftOverrides });
+		else await callRpc("prompt-manager/createPreset", { name, overrides: draftOverrides });
+		statusEl.textContent = "已保存 ✓（下一次模型步骤生效）";
+		statusEl.className = "dstatus ok";
+		void loadPresets();
+	} catch (e) {
+		statusEl.textContent = "保存失败：" + ((e && e.message) ? e.message : e);
+		statusEl.className = "dstatus err";
+	}
+});
+
 // 启动：默认展示最新 session 的最新一轮；无历史时回退全局最新
 (async () => {
 	void loadPresets(); // 左侧预设面板与主图并行加载
+	void loadDraftPreview(); // 草稿预览浮层（无 ?draft= 时为空操作）
 	try {
 		const data = await callRpc("prompt-manager/getHistory", {});
 		historySessions = data.sessions || [];

@@ -26,6 +26,8 @@ import { inspect } from 'node:util'
 export const name = 'prompt-manager'
 /** Required services. */
 export const inject = ['systemPrompt', 'tools']
+/** Pure preset helpers, exported for tests and reuse. */
+export { applyPreset, applyPresetKeyed, normalizePreset }
 /** Runtime schema for the prompt-manager row. */
 export const Config = z.object({
   /** Override the preset store directory (default: $DSH_HOME/prompts). */
@@ -40,6 +42,9 @@ const SECTION_NAME_RE = /^[a-z][a-z0-9_.:-]*$/
 const ACTIVE_FILENAME = 'active.yml'
 /** Valid preset rule actions. */
 const ACTIONS = ['replace', 'insert', 'remove']
+/** Sentinel order for a "top" rule: below every known base section (harness:identity = -100),
+ *  so `top: true` / 置顶 makes the section render as the very first prompt section. */
+const TOP_ORDER = -1000
 /** 幕布轮次时间轴：保留最近 N 轮真实组装快照（每次真实模型步骤产生一轮）。 */
 const REAL_SNAPSHOT_LIMIT = 20
 /** 对话历史侧栏：每个 session 保留最近 M 轮。 */
@@ -114,7 +119,9 @@ function normalizePreset(raw, name) {
     const section = rule.section === undefined ? '' : String(rule.section)
     if (!SECTION_NAME_RE.test(section)) throw new Error(`preset "${name}": invalid section name ${JSON.stringify(section)}`)
     if (action !== 'remove' && typeof rule.text !== 'string') throw new Error(`preset "${name}": ${action} rule for "${section}" requires a string text`)
-    const order = typeof rule.order === 'number' && Number.isFinite(rule.order) ? rule.order : undefined
+    // order: explicit number wins; `top: true` (置顶/压倒一切) maps to TOP_ORDER so the
+    // rule sorts before every base section. `after` remains the anchor for non-ordered inserts.
+    const order = typeof rule.order === 'number' && Number.isFinite(rule.order) ? rule.order : (rule.top === true ? TOP_ORDER : undefined)
     const after = rule.after === undefined ? undefined : String(rule.after)
     overrides.push({ action, section, text: action === 'remove' ? undefined : rule.text, order, after })
   }
@@ -132,13 +139,37 @@ function normalizePreset(raw, name) {
  * Inserted sections are appended after the named `after` section when given,
  * otherwise at the end (the registry drops numeric order from assembled
  * sections, so end placement is the v1 default).
+ *
+ * Rendering priority (顺序 = 优先级):
+ * - When NO rule carries an explicit `order`, placement is purely positional:
+ *   `after` anchor (or append at the end). This is the historical behavior.
+ * - When ANY rule carries an explicit `order` (or `top` → TOP_ORDER), the whole
+ *   result is re-sorted by stable ascending order: sections with an explicit
+ *   order jump to that numeric position, all other sections keep their current
+ *   array index as the sort key (preserving the registry's base order and the
+ *   anchor-based placement of non-ordered inserts). An `order` below -100 puts
+ *   the section ahead of harness:identity (压倒一切); `top: true` uses TOP_ORDER.
  * @param sections - assembled sections (never mutated).
  * @param overrides - normalized preset rules.
  * @returns a new sections array with the overrides applied.
  */
 function applyPreset(sections, overrides) {
+  return applyPresetKeyed(sections, overrides).map((entry) => entry.section)
+}
+
+/**
+ * applyPreset + per-section sort keys: returns [{ section, key }] where `key`
+ * is the exact numeric sort key the engine used (explicit order, else the
+ * section's index in the post-insertion array). The preview surface (and the
+ * drag-to-reorder UI) consumes these keys to compute exact midpoint orders.
+ * @param sections - assembled sections (never mutated).
+ * @param overrides - normalized preset rules.
+ * @returns [{ section, key }] in final render order.
+ */
+function applyPresetKeyed(sections, overrides) {
   const work = [...sections]
   const present = new Set(work.map((section) => section.name))
+  const orderRequested = overrides.some((rule) => rule.order !== undefined)
   for (const rule of overrides) {
     if (rule.action === 'replace') {
       const index = work.findIndex((section) => section.name === rule.section)
@@ -158,7 +189,13 @@ function applyPreset(sections, overrides) {
       if (index >= 0) work.splice(index, 1)
     }
   }
-  return work
+  if (orderRequested) {
+    // Stable ascending sort: explicit order wins, others keep current index.
+    const keyed = work.map((section, index) => ({ section, key: section.order !== undefined ? section.order : index }))
+    keyed.sort((a, b) => a.key - b.key)
+    return keyed
+  }
+  return work.map((section, index) => ({ section, key: index }))
 }
 
 /** Insert `entry` after the named section (or append at the end), tracking presence. */
@@ -213,6 +250,10 @@ class PromptManager extends Service {
   catalog = { sections: [], contexts: [], tools: [], variables: {}, rendered: '', ts: 0 }
   /** The pristine assembly observed by the waterfall (pre-preset), by scope of the last assembly. */
   lastPristine = null
+  /** Pristine sections of the LAST `__catalogRefresh` assemble (global scope, race-free). */
+  lastCatalogPristine = null
+  /** Monotonic counter guarding refreshCatalog against out-of-order commits. */
+  refreshSeq = 0
   /** The assembly returned by the waterfall (post-preset). */
   lastApplied = null
   /** The last REAL model-step assembly (agent scope; variables carry values), for the pipeline view. */
@@ -300,10 +341,22 @@ class PromptManager extends Service {
     return this.active === null ? null : this.presets.get(this.active)?.overrides ?? null
   }
 
-  /** Rebuild the global catalog snapshot (best-effort; failures emit an error). */
+  /** Rebuild the global catalog snapshot (best-effort; failures emit an error).
+   *  Concurrent refreshes (system-prompt/change + presets-changed + explicit
+   *  RPC) can complete out of order; a version guard keeps the newest STARTED
+   *  refresh from being clobbered by an older one that finishes later. */
   async refreshCatalog() {
+    const runId = ++this.refreshSeq
     try {
-      const assembly = await this.ctx.systemPrompt.assemble()
+      // The `__catalogRefresh` context marker makes the waterfall hook stash the
+      // pristine (pre-preset) assembly of THIS exact call into
+      // `lastCatalogPristine`, instead of racing with agent-scoped assembles
+      // that overwrite the shared `lastPristine` slot.
+      const assembly = await this.ctx.systemPrompt.assemble({ __catalogRefresh: true })
+      if (runId !== this.refreshSeq) return // a newer refresh started; discard this stale result
+      const pristine = this.lastCatalogPristine !== null && this.lastCatalogPristine !== undefined
+        ? this.lastCatalogPristine
+        : assembly.sections
       let rendered
       try {
         const { renderPrompt } = await import('@deepseek-ai/dsh-system-prompt')
@@ -313,6 +366,7 @@ class PromptManager extends Service {
       }
       this.catalog = {
         sections: assembly.sections,
+        pristineSections: pristine,
         contexts: assembly.contexts,
         tools: assembly.tools.map((tool) => tool.name),
         variables: assembly.variables,
@@ -382,7 +436,7 @@ class PromptManager extends Service {
           presetName: this.active,
           presetFile: activePreset?.path ?? null
         }))
-    const pristine = real !== null ? real.pristineSections : this.catalog.sections
+    const pristine = real !== null ? real.pristineSections : (this.catalog.pristineSections ?? this.catalog.sections)
     const applied = real !== null ? real.appliedSections : this.catalog.sections
     const variables = real !== null ? real.variables : this.catalog.variables
     const contexts = real !== null ? real.contexts : this.catalog.contexts
@@ -581,6 +635,51 @@ class PromptManager extends Service {
     return readFileSync(preset.path, 'utf8')
   }
 
+  /**
+   * Preview where a DRAFT preset's overrides would land in the render order,
+   * without saving or activating anything. The draft is applied with the same
+   * applyPreset logic the runtime uses, so the predicted positions match what
+   * the model would receive.
+   *
+   * Base: the last REAL agent assembly's pristine (pre-preset) sections — the
+   * same base the 幕布 shows for the current session (includes the tool 与 plan
+   * 命名空间段 the agent actually renders). Falls back to the global catalog
+   * (scope-less) when no real assembly exists yet.
+   * @param payload - { overrides: raw rule list } (same shape as preset overrides).
+   * @returns pristine/applied ordered name lists with draft/removed markers,
+   *          or { error } when the draft rules are invalid (client shows it live).
+   */
+  previewPreset(payload = {}) {
+    const raw = Array.isArray(payload?.overrides) ? payload.overrides : []
+    let rules
+    try {
+      rules = normalizePreset({ label: 'preview-draft', description: '', overrides: raw }, 'preview-draft').overrides
+    } catch (error) {
+      return { error: String(error?.message ?? error) }
+    }
+    const agentBase = this.lastReal !== null && this.lastReal !== undefined ? this.lastReal.pristineSections : null
+    const base = agentBase ?? (this.catalog.pristineSections ?? this.catalog.sections)
+    const pristine = base.map((section, index) => ({ name: section.name, position: index + 1 }))
+    const draftNames = new Set(rules.filter((rule) => rule.action !== 'remove').map((rule) => rule.section))
+    const removedNames = new Set(rules.filter((rule) => rule.action === 'remove').map((rule) => rule.section))
+    const applied = applyPresetKeyed(base, rules)
+      .map(({ section, key }, index) => ({
+        name: section.name,
+        position: index + 1,
+        key,
+        draft: draftNames.has(section.name),
+        removed: removedNames.has(section.name)
+      }))
+    return {
+      active: this.active,
+      baseScope: agentBase !== null ? 'agent' : 'global',
+      pristine,
+      applied,
+      draftCount: draftNames.size,
+      removedCount: removedNames.size
+    }
+  }
+
   /** Parse, validate, and persist a preset from raw YAML text (create or replace). */
   updatePresetYaml(presetName, yaml) {
     if (!PRESET_NAME_RE.test(presetName)) throw new Error(`invalid preset name "${presetName}" (must match ${PRESET_NAME_RE})`)
@@ -685,6 +784,7 @@ async function handleRpc(manager, method, payload) {
     case 'listPresets': return manager.listPresets()
     case 'getPreset': return manager.getPreset(String(payload?.name ?? ''))
     case 'getPresetYaml': return manager.getPresetYaml(String(payload?.name ?? ''))
+    case 'previewPreset': return manager.previewPreset(payload ?? {})
     case 'createPreset': return manager.createPreset(payload ?? {})
     case 'updatePreset': return manager.updatePreset(payload ?? {})
     case 'updatePresetYaml': return manager.updatePresetYaml(String(payload?.name ?? ''), String(payload?.yaml ?? ''))
@@ -710,6 +810,11 @@ export function apply(ctx, config) {
   // kept for the pipeline (幕布) view with real variable values.
   ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     manager.lastPristine = { ...assembly, sections: [...assembly.sections], contexts: [...assembly.contexts] }
+    // Catalog refresh marks its own call so its pristine lands in a dedicated
+    // slot (agent-scoped assembles overwrite `lastPristine` concurrently).
+    if (context !== null && context !== undefined && context.__catalogRefresh === true) {
+      manager.lastCatalogPristine = [...assembly.sections]
+    }
     const result = await next()
     const rules = manager.activeRules
     const applied = (rules === null || rules.length === 0)
