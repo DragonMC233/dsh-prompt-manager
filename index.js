@@ -9,7 +9,7 @@
 //    scope; a scope with an effective `complete: true` section is restored by
 //    the registry after the waterfall (documented limitation).
 //  - Agent tools: switch_prompt / list_prompts / get_prompt / save_prompt.
-//  - /api RPC endpoints `prompt-manager/*` (loopback) for the client half.
+//  - RPC endpoints on the plugin's own `/prompt-manager` channel for the client half.
 import { isModelInvocable } from '@deepseek-ai/dsh-skill'
 import { Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -804,7 +804,7 @@ async function handleRpc(manager, method, payload) {
 
 /**
  * Cordis plugin body: mount the service, the assembly waterfall hook, the
- * agent tools, and the loopback /api RPC surface.
+ * agent tools, and the plugin-owned `/prompt-manager` RPC channel.
  * @param ctx - the host context.
  * @param config - the prompt-manager row config.
  */
@@ -991,7 +991,7 @@ export function apply(ctx, config) {
         type: 'object',
         additionalProperties: false,
         properties: {
-          active: { type: 'string' },
+          active: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           presets: { type: 'array', items: { type: 'string' } }
         }
       },
@@ -1014,7 +1014,7 @@ export function apply(ctx, config) {
         type: 'object',
         additionalProperties: false,
         properties: {
-          active: { type: 'string' },
+          active: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           presets: {
             type: 'array',
             required: true,
@@ -1036,7 +1036,8 @@ export function apply(ctx, config) {
               additionalProperties: false,
               properties: {
                 name: { type: 'string', required: true },
-                text: { type: 'string', required: true }
+                text: { type: 'string', required: true },
+                interpolate: { type: 'boolean' }
               }
             }
           }
@@ -1066,7 +1067,7 @@ export function apply(ctx, config) {
         additionalProperties: false,
         properties: {
           name: { type: 'string', required: true },
-          text: { type: 'string' }
+          text: { oneOf: [{ type: 'string' }, { type: 'null' }] }
         }
       },
       render: (_args, value) => [{ type: 'text', text: value.text === null ? `Section ${value.name}: not present.` : `Section ${value.name}:\n${value.text}` }]
@@ -1110,11 +1111,14 @@ export function apply(ctx, config) {
     }
   }))
 
-  // Loopback /api RPC surface for the web client half.
+  // RPC surface for the web client half. `/api` is reserved: dsh-api-gateway
+  // installs the single shared-channel interceptor there and a second
+  // registration throws, so this plugin owns its own channel instead
+  // (POST /prompt-manager/<endpoint>, endpoint relative to the channel).
   ctx.inject(['connection'], (connectionCtx) => {
-    connectionCtx.connection.rpc.intercept('/api', (endpoint) => endpoint.startsWith('prompt-manager/'), async (endpoint, payload) => {
+    connectionCtx.connection.rpc.handle('/prompt-manager', async (endpoint, payload) => {
       try {
-        return { ok: true, value: await handleRpc(manager, endpoint.slice('prompt-manager/'.length), payload) }
+        return { ok: true, value: await handleRpc(manager, endpoint, payload) }
       } catch (error) {
         return foldError(error)
       }
@@ -1124,7 +1128,7 @@ export function apply(ctx, config) {
   // Standalone full-screen pipeline page (幕布): /prompt-manager/pipeline.
   // Served by the host web server so the pipeline page gets the whole window
   // instead of the settings panel; the page fetches getPipeline over the
-  // loopback /api RPC. 页面每次请求实时读文件（不缓存），开发期改
+  // the plugin's own RPC channel. 页面每次请求实时读文件（不缓存），开发期改
   // pipeline.html 无需重启 dsh web。路由名取数据语义（pipeline/幕布），
   // 不取渲染形态（canvas）——形态可变、语义稳定，见 docs/DESIGN.md §15.5e。
   ctx.inject(['webServer'], (webCtx) => {

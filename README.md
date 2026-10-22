@@ -45,7 +45,7 @@ Harness 的系统提示词本来就不是一整块文本：各插件用 `systemP
 | 置顶 / 精确排序 | 注册表按 `order` 排序的既有语义 | 任一规则带 order/top 时整体**稳定升序重排**；`top` = `order: -1000`，压过 `harness:identity`（-1000）排到最前 |
 | 编辑 / 切换 / 固化 | `ctx.tools.register`（dsh-tools） | 4 个 agent 工具：`switch_prompt` / `list_prompts` / `get_prompt` / `save_prompt` |
 | 设置页管理界面 | client 模块 + `ctx.slots.inject("settings.section")` | 注册「提示词管理」设置 tab |
-| 幕布全屏页 | `webServer.register` 独立路由 + loopback `/api` RPC | 页面每次加载实时拉取组装快照 |
+| 幕布全屏页 | `webServer.register` 独立路由 + 插件独占的 `/prompt-manager` RPC channel | 页面每次加载实时拉取组装快照 |
 | 实时快照与轮次回看 | `system-prompt/assemble` + `agent/pre-step` 事件 | 每次真实模型步骤捕获 pristine / applied / 变量 / 工具 / 用户输入，host 保留 20 轮 |
 | 预览 = 最终效果 | `previewPreset` RPC 复用同一纯函数 | host 用与运行时**同一个** `applyPreset` 应用草稿并返回落位（单一事实来源），客户端不复制算法；基准取最近一次真实组装 |
 | 文件热重载 | fs watch + 版本守卫 | 预设目录变更即重载；并发刷新乱序提交被丢弃 |

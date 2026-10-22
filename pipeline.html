@@ -262,10 +262,10 @@ function truncate(text, max) {
 	return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
-// ── RPC：直连 host（同源 loopback） ──────────────────────────────────────
+// ── RPC：直连 host（同源，走插件独占的 /prompt-manager channel） ─────────
 async function callRpc(endpoint, payload) {
 	const body = { type: "client-request", rpcId: crypto.randomUUID(), method: endpoint, payload: payload ?? {} };
-	const res = await fetch("/api/" + endpoint, {
+	const res = await fetch("/prompt-manager/" + endpoint, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body)
@@ -739,7 +739,7 @@ async function load(sel) {
 		roundIndex = Number.isFinite(sel.index) ? sel.index : 0;
 	}
 	try {
-		pipeline = await callRpc("prompt-manager/getPipeline", sel);
+		pipeline = await callRpc("getPipeline", sel);
 		expandedGroups = new Set(); // 切换轮次/加载时重置展开状态
 		layout = computeLayout(pipeline, expandedGroups);
 		renderNodes();
@@ -813,7 +813,7 @@ function updateRoundLabel() {
 /** 拉取并渲染对话历史（按 session 分类）。 */
 async function refreshHistory() {
 	try {
-		const data = await callRpc("prompt-manager/getHistory", {});
+		const data = await callRpc("getHistory", {});
 		historySessions = data.sessions || [];
 		renderHistoryPanel();
 		// 跟随模式：当前选中的 session 有新轮次且在看最新轮 → 自动切到最新
@@ -1026,7 +1026,7 @@ async function loadPresets() {
 	presetsBusy = true;
 	presetsBody.innerHTML = '<div class="pempty">加载中…</div>';
 	try {
-		presetsData = await callRpc("prompt-manager/listPresets", {});
+		presetsData = await callRpc("listPresets", {});
 		renderPresetPanel();
 	} catch (e) {
 		presetsBody.innerHTML = '<div class="pempty">加载失败：' + escapeHtml((e && e.message) ? e.message : e) + "</div>";
@@ -1096,7 +1096,7 @@ function renderPresetPanel() {
 
 async function togglePreset(name, active) {
 	try {
-		await callRpc("prompt-manager/setActive", { name: active ? "" : name });
+		await callRpc("setActive", { name: active ? "" : name });
 		await loadPresets();
 		await load(); // 重载当前轮次：主图覆盖列/来源段状态标记随激活变化
 	} catch (e) {
@@ -1168,7 +1168,7 @@ async function loadDraftPreview() {
 async function refreshDraftPreview() {
 	draftBody.innerHTML = '<div class="empty">计算草稿落位中…</div>';
 	try {
-		const data = await callRpc("prompt-manager/previewPreset", { overrides: draftOverrides });
+		const data = await callRpc("previewPreset", { overrides: draftOverrides });
 		draftPreviewData = data;
 		renderDraftPreview(data);
 	} catch (e) {
@@ -1268,8 +1268,8 @@ document.getElementById("btn-draft-save").addEventListener("click", async () => 
 	statusEl.textContent = "保存中…";
 	statusEl.className = "dstatus";
 	try {
-		if (exists) await callRpc("prompt-manager/updatePreset", { name, overrides: draftOverrides });
-		else await callRpc("prompt-manager/createPreset", { name, overrides: draftOverrides });
+		if (exists) await callRpc("updatePreset", { name, overrides: draftOverrides });
+		else await callRpc("createPreset", { name, overrides: draftOverrides });
 		statusEl.textContent = "已保存 ✓（下一次模型步骤生效）";
 		statusEl.className = "dstatus ok";
 		void loadPresets();
@@ -1284,7 +1284,7 @@ document.getElementById("btn-draft-save").addEventListener("click", async () => 
 	void loadPresets(); // 左侧预设面板与主图并行加载
 	void loadDraftPreview(); // 草稿预览浮层（无 ?draft= 时为空操作）
 	try {
-		const data = await callRpc("prompt-manager/getHistory", {});
+		const data = await callRpc("getHistory", {});
 		historySessions = data.sessions || [];
 	} catch (e) { historySessions = []; }
 	if (historySessions.length > 0) {
