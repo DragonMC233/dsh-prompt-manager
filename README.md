@@ -42,7 +42,7 @@ Harness 的系统提示词本来就不是一整块文本：各插件用 `systemP
 | 我们的功能 | 借用的框架机制 | 实现方式 |
 |---|---|---|
 | 预设改写提示词 | 官方 `system-prompt/assemble` **waterfall 扩展点** | 挂在 waterfall 末尾，组装完成后按激活预设的规则改写（replace / insert / remove），返回值权威、对所有作用域生效 |
-| 置顶 / 精确排序 | 注册表按 `order` 排序的既有语义 | 任一规则带 order/top 时整体**稳定升序重排**；`top` = `order: -1000`，压过 `harness:identity`（-100）排到最前 |
+| 置顶 / 精确排序 | 注册表按 `order` 排序的既有语义 | 任一规则带 order/top 时整体**稳定升序重排**；`top` = `order: -1000`，压过 `harness:identity`（-1000）排到最前 |
 | 编辑 / 切换 / 固化 | `ctx.tools.register`（dsh-tools） | 4 个 agent 工具：`switch_prompt` / `list_prompts` / `get_prompt` / `save_prompt` |
 | 设置页管理界面 | client 模块 + `ctx.slots.inject("settings.section")` | 注册「提示词管理」设置 tab |
 | 幕布全屏页 | `webServer.register` 独立路由 + loopback `/api` RPC | 页面每次加载实时拉取组装快照 |
@@ -85,7 +85,7 @@ label: 创作模式
 description: 面向创意写作的提示词集
 overrides:
   - action: replace          # replace | insert | remove
-    section: deployment:persona
+    section: deployment:persona-prefix
     text: |
       你是一位创意写作助手……
   - action: insert
@@ -95,7 +95,7 @@ overrides:
       写作流程建议……
   - action: insert
     section: security:top-guard
-    top: true                # 置顶/压倒一切：排到 harness:identity（order -100）之前
+    top: true                # 置顶/压倒一切：排到 harness:identity（order -1000）之前
     text: |
       最高优先级规则……
   - action: remove
@@ -110,7 +110,7 @@ overrides:
 |---|---|
 | `switch_prompt` | 切换 active preset 或停用（`off: true`） |
 | `list_prompts` | 列出预设、active 与当前提示词段 |
-| `get_prompt` | 读取指定 section 的当前文本（如 `deployment:persona`） |
+| `get_prompt` | 读取指定 section 的当前文本（如 `deployment:persona-prefix`） |
 | `save_prompt` | 把当前 section 文本固化为某 preset 的 replace 规则 |
 
 ## 限制

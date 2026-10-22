@@ -881,7 +881,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Required services (cordis fiber inject — service names, not package names).
-		 *  `slots` is provided by @deepseek-ai/dsh-client-runtime, `connection` by
+		 *  `slots` is provided by @deepseek-ai/dsh-client-ui-renderer, `connection` by
 		 *  @deepseek-ai/dsh-client-connection; the package-name list in package.json
 		 *  `dsh.client.inject` only drives client-module loading, not fiber inject. */
 		const inject = ["slots", "connection"];

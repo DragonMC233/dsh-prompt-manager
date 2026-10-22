@@ -44,6 +44,9 @@ const ACTIVE_FILENAME = 'active.yml'
 const ACTIONS = ['replace', 'insert', 'remove']
 /** Sentinel order for a "top" rule: below every known base section (harness:identity = -100),
  *  so `top: true` / 置顶 makes the section render as the very first prompt section. */
+// 适配说明（DSH 0.2.0-rc.2）：harness:identity 的注册 order 已由 -100 改为 -1000，与本哨兵同值。
+// 当前仍生效：组装结果不携带 order，其余段的排序键是数组下标（≥0），-1000 恒小于下标。
+// 数值暂保持 -1000 不变，等后续统一处理。
 const TOP_ORDER = -1000
 /** 幕布轮次时间轴：保留最近 N 轮真实组装快照（每次真实模型步骤产生一轮）。 */
 const REAL_SNAPSHOT_LIMIT = 20
@@ -64,10 +67,11 @@ function resolveDshHome() {
  * curated read-only map for display; unknown names fall back to a generic hint.
  */
 const SECTION_OWNERS = [
-  { match: (name) => name === 'harness:identity', owner: '@deepseek-ai/dsh-system-prompt 内置（order -100）' },
+  { match: (name) => name === 'harness:identity', owner: '@deepseek-ai/dsh-system-prompt 内置（order -1000）' },
   { match: (name) => name === 'harness:source', owner: 'dsh-app-boot 启动注入（实现 checkout 说明）' },
   { match: (name) => name === 'app:web-surface', owner: '@deepseek-ai/dsh-web-app（Web 表面说明）' },
-  { match: (name) => name === 'deployment:persona', owner: 'dsh-system-prompt 配置 config.persona（order 0）；可按 agent 由 dsh-persona 覆盖' },
+  { match: (name) => name === 'deployment:persona-prefix', owner: 'dsh-system-prompt 配置 personaPrefix（order 0）；可按 agent 由 dsh-persona 覆盖' },
+  { match: (name) => name === 'deployment:persona-suffix', owner: 'dsh-system-prompt 配置 personaSuffix（order 10200）；可按 agent 由 dsh-persona 覆盖' },
   { match: (name) => name.startsWith('plan:'), owner: '@deepseek-ai/dsh-plan-mode（计划模式策略段）' },
   { match: (name) => name.startsWith('tool:'), owner: '工具插件（@deepseek-ai/dsh-tool-*，经 dsh-tools 注册）' },
   { match: (name) => name.startsWith('tools:') || name.startsWith('code-'), owner: '@deepseek-ai/dsh-tools（工具/代码模式引导）' },
@@ -82,9 +86,12 @@ function resolveOwner(name) {
 }
 
 /** Known numeric orders for well-known sections (registry drops order from assembled sections). */
+// 适配说明（DSH 0.2.0-rc.2）：harness:identity 由 -100 改为 -1000；deployment:persona 拆为
+// deployment:persona-prefix（0）与 deployment:persona-suffix（10200）。
 const ORDER_HINTS = new Map([
-  ['harness:identity', -100],
-  ['deployment:persona', 0]
+  ['harness:identity', -1000],
+  ['deployment:persona-prefix', 0],
+  ['deployment:persona-suffix', 10200]
 ])
 
 /** Order hint for the pipeline view: known numeric order, else relative position. */
@@ -1049,7 +1056,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: 'get_prompt',
-    description: 'Read the current text of one system-prompt section by name (e.g. deployment:persona, harness:identity, plan-mode sections). Returns null when the section is not present in the global catalog.',
+    description: 'Read the current text of one system-prompt section by name (e.g. deployment:persona-prefix, harness:identity, plan: sections). Returns null when the section is not present in the global catalog.',
     parameters: {
       section: { type: 'string', required: true, description: 'Section name to read.' }
     },
@@ -1111,7 +1118,7 @@ export function apply(ctx, config) {
       } catch (error) {
         return foldError(error)
       }
-    }, { authority: 'loopback' })
+    })
   })
 
   // Standalone full-screen pipeline page (幕布): /prompt-manager/pipeline.
