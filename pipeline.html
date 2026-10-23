@@ -27,7 +27,7 @@
 		overflow: auto; cursor: grab; background: #0c0e12;
 	}
 	#wrap.dragging { cursor: grabbing; }
-	/* 舞台：尺寸随 world×scale 增长，最小撑满视口；world 在 stage 内手动居中（transform 不参与布局） */
+	/* 舞台：尺寸随 world×scale 增长并四周留出拖动余量；world 在 stage 内手动居中（transform 不参与布局） */
 	#stage {
 		position: relative;
 		min-width: 100%; min-height: 100%;
@@ -256,6 +256,8 @@
 "use strict";
 // ── 常量 ──────────────────────────────────────────────────────────────────
 const NODE_W = 236, NODE_H = 108, PAD = 26, COL_GAP = 88, V_GAP = 16, SIDE_ROW_GAP = 48;
+/** 画布四周的额外拖动余量（视口尺寸的比例）：内容能滚到视口中部，不必贴边抬头看。 */
+const DRAG_MARGIN_RATIO = 0.5;
 
 function truncate(text, max) {
 	if (!text) return "";
@@ -693,14 +695,21 @@ window.addEventListener("mousemove", (ev) => {
 
 function applyTransform() {
 	world.style.transform = "scale(" + scale + ")";
-	// 舞台尺寸随 world×scale 增长（最小撑满视口）；world 手动居中：
-	// 视觉中心 = left + W*s/2，令其等于舞台中心 S/2 → left = (S - W*s)/2
-	const S = Math.max(layout.worldW * scale, wrap.clientWidth);
-	const T = Math.max(layout.worldH * scale, wrap.clientHeight);
+	// 舞台 = 内容与视口的较大者 + 四周留白；留白同时决定可拖动范围，
+	// 让内容能滚到视口中部附近，而不是贴边。
+	const contentW = layout.worldW * scale;
+	const contentH = layout.worldH * scale;
+	const marginX = wrap.clientWidth * DRAG_MARGIN_RATIO;
+	const marginY = wrap.clientHeight * DRAG_MARGIN_RATIO;
+	const S = Math.max(contentW, wrap.clientWidth) + marginX * 2;
+	const T = Math.max(contentH, wrap.clientHeight) + marginY * 2;
 	stage.style.width = S + "px";
 	stage.style.height = T + "px";
-	world.style.left = (S - layout.worldW * scale) / 2 + "px";
-	world.style.top = (T - layout.worldH * scale) / 2 + "px";
+	// world 手动居中：视觉中心 = left + contentW/2，令其等于舞台中心 S/2
+	const left = (S - contentW) / 2;
+	const top = (T - contentH) / 2;
+	world.style.left = left + "px";
+	world.style.top = top + "px";
 	draw(cv, layout, scale, hoverId);
 	statusEl.textContent = Math.round(scale * 100) + "%";
 }
@@ -709,10 +718,28 @@ function applyTransform() {
 function zoomAtCenter(next) {
 	scale = Math.max(0.3, Math.min(2.5, next));
 	applyTransform();
-	const sw = Math.max(layout.worldW * scale, wrap.clientWidth);
-	const sh = Math.max(layout.worldH * scale, wrap.clientHeight);
-	wrap.scrollLeft = Math.max(0, (sw - wrap.clientWidth) / 2);
-	wrap.scrollTop = Math.max(0, (sh - wrap.clientHeight) / 2);
+	// stage 已把内容居中，滚到 stage 中心即视口中心
+	wrap.scrollLeft = Math.max(0, (stage.offsetWidth - wrap.clientWidth) / 2);
+	wrap.scrollTop = Math.max(0, (stage.offsetHeight - wrap.clientHeight) / 2);
+}
+
+/** 以视口内某个客户端坐标为锚缩放：该点下面的内容保持不动。 */
+function zoomAt(next, anchorClientX, anchorClientY) {
+	const clamped = Math.max(0.3, Math.min(2.5, next));
+	if (clamped === scale) return;
+	const rect = wrap.getBoundingClientRect();
+	const mx = anchorClientX - rect.left;
+	const my = anchorClientY - rect.top;
+	// 锚点当前对应的 world 坐标（缩放前）
+	const worldX = (wrap.scrollLeft + mx - parseFloat(world.style.left || "0")) / scale;
+	const worldY = (wrap.scrollTop + my - parseFloat(world.style.top || "0")) / scale;
+	scale = clamped;
+	applyTransform();
+	// 缩放后把同一个 world 点滚回锚点下方
+	const left = parseFloat(world.style.left || "0");
+	const top = parseFloat(world.style.top || "0");
+	wrap.scrollLeft = left + worldX * scale - mx;
+	wrap.scrollTop = top + worldY * scale - my;
 }
 
 function fit() {
@@ -1122,9 +1149,7 @@ applyPresetsOpen();
 wrap.addEventListener("wheel", (e) => {
 	e.preventDefault();
 	const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-	const next = scale * factor;
-	if (next === scale) return;
-	zoomAtCenter(next);
+	zoomAt(scale * factor, e.clientX, e.clientY);
 }, { passive: false });
 
 let dragging = false, sx = 0, sy = 0, sl = 0, st = 0;

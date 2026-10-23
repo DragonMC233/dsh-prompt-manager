@@ -40,6 +40,8 @@ const PRESET_NAME_RE = /^[a-z][a-z0-9_-]*$/
 const SECTION_NAME_RE = /^[a-z][a-z0-9_.:-]*$/
 /** Active-pointer file inside the preset store. */
 const ACTIVE_FILENAME = 'active.yml'
+/** Prefix owning the plugin's own RPC channel (client half <-> host half). */
+const RPC_PREFIX = '/prompt-manager'
 /** Valid preset rule actions. */
 const ACTIONS = ['replace', 'insert', 'remove']
 /** Sentinel order for a "top" rule: below every known base section (harness:identity = -100),
@@ -1113,16 +1115,58 @@ export function apply(ctx, config) {
 
   // RPC surface for the web client half. `/api` is reserved: dsh-api-gateway
   // installs the single shared-channel interceptor there and a second
-  // registration throws, so this plugin owns its own channel instead
-  // (POST /prompt-manager/<endpoint>, endpoint relative to the channel).
-  ctx.inject(['connection'], (connectionCtx) => {
-    connectionCtx.connection.rpc.handle('/prompt-manager', async (endpoint, payload) => {
-      try {
-        return { ok: true, value: await handleRpc(manager, endpoint, payload) }
-      } catch (error) {
-        return foldError(error)
+  // registration throws. `connection.rpc.handle` is not usable either — it
+  // registers through the Connection service's own ctx, where `webServer` is
+  // undefined, so the route is dropped silently. Mount the prefix route
+  // directly and speak the same client-request/server-response envelope.
+  ctx.inject(['connection', 'webServer'], (rpcCtx) => {
+    rpcCtx.effect(() => rpcCtx.webServer.register({
+      kind: 'prefix',
+      path: RPC_PREFIX,
+      handler: async (req, res) => {
+        const rejection = rpcCtx.connection.requestRejection(req)
+        if (rejection !== undefined) {
+          res.writeHead(rejection)
+          res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+          return
+        }
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+        if (!pathname.startsWith(`${RPC_PREFIX}/`)) {
+          res.writeHead(404)
+          res.end()
+          return
+        }
+        const endpoint = pathname.slice(RPC_PREFIX.length + 1)
+        const chunks = []
+        for await (const chunk of req) chunks.push(chunk)
+        let message
+        try {
+          message = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        } catch {
+          res.writeHead(400)
+          res.end('body is not JSON')
+          return
+        }
+        if (message === null || typeof message !== 'object' || message.type !== 'client-request' || message.method !== endpoint) {
+          res.writeHead(400)
+          res.end('invalid client-request envelope')
+          return
+        }
+        let result
+        try {
+          result = { ok: true, value: await handleRpc(manager, endpoint, message.payload) }
+        } catch (error) {
+          result = foldError(error)
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ type: 'server-response', rpcId: message.rpcId, result }))
       }
-    })
+    }), 'prompt-manager: /prompt-manager RPC route')
   })
 
   // Standalone full-screen pipeline page (幕布): /prompt-manager/pipeline.
